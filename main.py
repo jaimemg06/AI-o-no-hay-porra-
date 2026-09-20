@@ -1,9 +1,6 @@
 import pandas as pd
-import numpy as np
-from numpy.typing import ArrayLike
 from sklearn.naive_bayes import GaussianNB
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
 from datetime import datetime
 import os
 from typing import Final
@@ -33,50 +30,51 @@ def signo(row: pd.Series) -> str:
     else:
         return "X"
 
-def estadisticas_previas(df: pd.DataFrame, equipo: str, fecha: datetime) -> tuple[float, float]:
-    """Generamos una tupla de estadísticas previas (goles a favor y en contra)"""
-    partidos_local = df[
-        (df["Equipo local"] == equipo) &
-        (df["Fecha del partido"] < fecha)
-    ]
+def estadisticas_previas(
+    df: pd.DataFrame, 
+    equipo: str, 
+    fecha: datetime, 
+    es_local: bool, 
+    ultimos_n: int = 5
+) -> tuple [float, float]:
+    df_subset: pd.DataFrame = df[df["Fecha del partido"] < fecha]
 
-    partidos_visitante = df[
-        (df["Equipo visitante"] == equipo) &
-        (df["Fecha del partido"] < fecha)
-    ]
+    if es_local:
+        partidos = df_subset[df_subset["Equipo local"] == equipo]
+    else:
+        partidos = df_subset[df_subset["Equipo visitante"] == equipo]
 
-    goles_favor = (
-        partidos_local["Goles local"].sum()
-        + partidos_visitante["Goles visitante"].sum()
-    )
+    if len(partidos) == 0:
+        return (0.0, 0.0)
 
-    goles_contra = (
-        partidos_local["Goles visitante"].sum()
-        + partidos_visitante["Goles local"].sum()
-    )
+    partidos_recientes = partidos.tail(ultimos_n)
 
-    partidos = len(partidos_local) + len(partidos_visitante)
+    if es_local:
+        media_gf = partidos_recientes["Goles local"].mean()
+        media_gc = partidos_recientes["Goles visitante"].mean()
+    else:
+        media_gf = partidos_recientes["Goles visitante"].mean()
+        media_gc = partidos_recientes["Goles local"].mean()
 
-    if partidos == 0:
-        return 0.0, 0.0
-
-    return goles_favor / partidos, goles_contra / partidos
+    return (float(media_gf), float(media_gc))
 
 def definir_equipos(df: pd.DataFrame) -> set[str]:
+    """Devuelve el conjunto de equipos existentes en el conjunto de datos para mayor exactitud al introducir los nombres"""
     eq_local = df["Equipo local"].to_list()
     eq_visitante = df["Equipo visitante"].to_list()
 
     return set(eq_local + eq_visitante)
 
 def extraer_features(partidos_a_procesar: pd.DataFrame, df_completo: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Extrae del dataframe original las estadísticas necesarias según el número de partidos que se requieran"""
     X = list()
     y = list()
 
     for _, row in partidos_a_procesar.iterrows():
         fecha: datetime = row["Fecha del partido"]
             
-        gf_local, gc_local = estadisticas_previas(df_completo, row["Equipo local"], fecha)
-        gf_vis, gc_vis = estadisticas_previas(df_completo, row["Equipo visitante"], fecha)
+        gf_local, gc_local = estadisticas_previas(df=df_completo, equipo=row["Equipo local"], fecha=fecha, es_local=True)
+        gf_vis, gc_vis = estadisticas_previas(df=df_completo, equipo=row["Equipo visitante"], fecha= fecha, es_local=False)
             
         if gf_local == 0 and gf_vis == 0:
             continue
@@ -108,23 +106,6 @@ def baseline(df: pd.DataFrame) -> list[float]:
     num_filas: int = df.shape[0]
     return [local_win*100 / num_filas, visitante_win*100 / num_filas, empate*100 / num_filas]
 
-def evaluar_modelo(df: pd.DataFrame, num_part_entren: int, modelo: GaussianNB, le: LabelEncoder) -> None:
-    X_entren, y_entren = extraer_features(df.head(num_part_entren), df)
-
-    y_enc_entren = le.fit_transform(y_entren)
-
-    modelo.fit(X_entren, y_enc_entren)
-
-    X_test, y_test = extraer_features(df.iloc[num_part_entren:], df)
-
-    y_enc_test = le.transform(y_test)
-
-    #modelo.predict(X_df_test, y_enc_test)
-
-    exactitud = modelo.score(X_test, y_enc_test)
-
-    print(f"Accuracy: {exactitud:.2f}")
-
 def walk_forward(df: pd.DataFrame, part_calentamiento: int, modelo: GaussianNB) -> list[float]:
     aciertos_modelo: int = 0
     aciertos_baseline: int = 0
@@ -153,7 +134,6 @@ def walk_forward(df: pd.DataFrame, part_calentamiento: int, modelo: GaussianNB) 
 
 def main() -> None:
     df: pd.DataFrame = importar_datos()
-
     df["Signo"] = df.apply(signo, axis=1)
     df = df.sort_values("Fecha del partido")
 
@@ -164,9 +144,11 @@ def main() -> None:
     y_enc = le.fit_transform(y_total)
 
     modelo: GaussianNB = GaussianNB()
-    #evaluar_modelo(df=df, num_part_entren=50, modelo=modelo, le=le)
+
+    #=====DEBUG=====
     accuracys: list[float] = walk_forward(df, 50, modelo)
     print(f"Accuracy modelo: {accuracys[0]}\nAccuracy baseline {accuracys[1]}")
+    #=====DEBUG=====
 
     modelo.fit(X_total, y_enc)
 
@@ -188,12 +170,13 @@ def main() -> None:
         print("¡ERROR!: Fecha no válida")
         return
 
+    #=====DEBUG=====
     stats_base: list[float] = baseline(df)
-
     print(f"% victorias local: {stats_base[0]}\n% victorias visitante: {stats_base[1]}\n% empates {stats_base[2]}")
+    #=====DEBUG=====
 
-    gf_l, gc_l = estadisticas_previas(df, equipo_local, fecha_partido)
-    gf_v, gc_v = estadisticas_previas(df, equipo_visitante, fecha_partido)
+    gf_l, gc_l = estadisticas_previas(df=df, equipo=equipo_local, fecha=fecha_partido, es_local=True)
+    gf_v, gc_v = estadisticas_previas(df=df, equipo=equipo_visitante, fecha=fecha_partido, es_local=False)
 
     if (gf_l == 0 and gc_l == 0) or (gf_v == 0 and gc_v == 0):
         print("¡ERROR!: No hay suficientes datos históricos para uno de los equipos.")
@@ -207,7 +190,6 @@ def main() -> None:
     pred = modelo.predict(X_pred_df)
     resultado: str = le.inverse_transform(pred)[0]
 
-    #CAMBIAR ESTO, CÓDIGO REPETIDO
     if resultado == "1":
         print(f"\nPredicción '{equipo_local} vs {equipo_visitante}': {resultado[0]}, gana {equipo_local}")
     elif resultado == "X":
